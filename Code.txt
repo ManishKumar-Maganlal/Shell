@@ -1,0 +1,67 @@
+#!/bin/bash
+
+# Help function to display usage
+function help() {
+    echo "Usage: $0"
+    echo "This script checks and fixes SSSD issues on a specified server."
+}
+
+# Variables
+LOG_DIR="/var/tmp/SSSD_issue_fix_outputs"
+JUMP_SERVER="example.com"  # Replace with your actual jump server
+
+# Ensure log directory exists
+if [ ! -d "$LOG_DIR" ]; then
+    mkdir -p "$LOG_DIR"
+    echo "Log directory created at $LOG_DIR."
+else
+    echo "Log directory already exists at $LOG_DIR."
+fi
+
+# Get hostname and X ID from the user
+read -p "Enter the hostname of the target server: " HOSTNAME
+read -p "Enter the X ID for user-check: " X_ID
+
+# Function to log output
+log_output() {
+    local message="$1"
+    echo "$(date --iso-8601=seconds) - $message" | tee -a "$LOG_DIR/$HOSTNAME-$(date +%Y).log"
+}
+
+# Function to check SSSD status
+check_sssd_status() {
+    log_output "Checking SSSD status on $HOSTNAME..."
+    ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -o BatchMode=yes "$HOSTNAME" "sudo systemctl status sssd"
+}
+
+# Function to restart SSSD and clear cache
+fix_sssd_issue() {
+    log_output "Fixing SSSD Issue on $HOSTNAME..."
+    ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -o BatchMode=yes "$HOSTNAME" "sudo systemctl stop sssd"
+    ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -o BatchMode=yes "$HOSTNAME" "sudo rm -f /var/lib/sss/db/* /var/log/sssd/*"
+    ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -o BatchMode=yes "$HOSTNAME" "sudo systemctl start sssd"
+}
+
+# Check SSSD status
+check_sssd_status
+STATUS=$?
+
+if [ $STATUS -ne 0 ]; then
+    log_output "SSSD service is inactive on $HOSTNAME. Attempting to fix."
+    fix_sssd_issue
+else
+    log_output "SSSD service is active on $HOSTNAME."
+fi
+
+# Check user lookup with sssctl
+log_output "Checking user lookup with sssctl for X ID $X_ID on $HOSTNAME..."
+OUTPUT=$(ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -o BatchMode=yes "$HOSTNAME" "sudo sssctl user-check $X_ID")
+
+if [[ "$OUTPUT" == *"User name lookup with ($X_ID) failed"* ]]; then
+    log_output "User name lookup failed. Fixing the issue..."
+    fix_sssd_issue  # Re-run the function to fix SSSD issues
+else
+    log_output "User lookup successful for ID $X_ID on $HOSTNAME."
+fi
+
+log_output "SSSD issue resolution completed for $HOSTNAME."
